@@ -45,9 +45,8 @@ jobs:
           name: Run 1point3acres signin
           command: |
             python -m onepoint3acres.onepoint3acres
-     
-      
-   189pan:
+
+  189pan:
     docker:
       - image: cimg/python:3.11
     steps:
@@ -58,12 +57,11 @@ jobs:
             python -m pip install --upgrade pip
             pip install requests 2captcha-python
       - run:
-          name: Run 1point3acres signin
+          name: Run 189pan signin  # 修正任务描述
           command: |
-            python -m 189pan.189pan      
+            python -m 189pan.189pan
 
 workflows:
-  # Allow manual triggers
   manual_trigger:
     jobs:
       # - nodeseek:
