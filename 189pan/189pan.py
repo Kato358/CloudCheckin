@@ -159,36 +159,34 @@ def main():
     """主程序"""
     # 记录开始时间
     start_time = datetime.now()
-    send_tg_notification("🚀 天翼云盘自动签到抽奖程序启动")
-
+    
     print("# 天翼云盘自动签到抽奖程序")
     print()
-
+    
     # 加载账户信息
     accounts = load_accounts()
-    summary_msg = f"📋 执行概览\n- 启动时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n- 账户数量: {len(accounts)} 个"
     print(f"## 执行概览")
     print(f"- **启动时间**: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"- **账户数量**: {len(accounts)} 个")
-    send_tg_notification(summary_msg)
     print()
-
-    # 处理每个账户
+    
+    # 存储所有账户结果
     all_results = []
+    
+    # 处理每个账户
     for i, (username, password) in enumerate(accounts, 1):
         account_id = f"账户{i}"
         print(f"## {account_id}")
-        send_tg_notification(f"🔍 开始处理{account_id}")
-
+        
         bot = TianYiCloudBot(username, password, account_id)
         results = bot.run()
         all_results.append(results)
-
+        
         # 输出结果摘要
         print(f"### 执行结果")
         print(f"- **登录状态**: {results['login']}")
         print(f"- **签到结果**: {results['sign_in']}")
-
+        
         # 抽奖结果
         if results['draws']:
             print(f"- **抽奖结果**:")
@@ -199,37 +197,43 @@ def main():
                     print(f"  - 🎉 第{j}次: {clean_result}")
                 else:
                     print(f"  - ❌ 第{j}次: {clean_result}")
-
+        
         print()
-
+    
     # 记录结束时间并计算运行时间
     end_time = datetime.now()
     duration = end_time - start_time
-
-    # 发送总结报告
-    summary_report = "📊 执行统计\n"
-    summary_report += f"- 结束时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-    summary_report += f"- 运行时长: {duration.total_seconds():.2f} 秒\n\n"
-    summary_report += "📝 详细结果:\n"
     
-    for result in all_results:
-        summary_report += f"\n🔹 {result['account_id']}:\n"
-        summary_report += f"- 登录: {result['login']}\n"
-        summary_report += f"- 签到: {result['sign_in']}\n"
-        for i, draw in enumerate(result['draws'], 1):
-            summary_report += f"- 抽奖{i}: {draw}\n"
+    # 构建TG通知消息
+    report_date = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    tg_message = f"{report_date} 天翼云签到报告\n\n"
+    tg_message += f"📅 执行时间: {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%H:%M')}\n"
+    tg_message += f"⏱️ 运行时长: {duration.total_seconds():.2f}秒\n"
+    tg_message += f"👤 账户总数: {len(accounts)}个\n\n"
     
-    summary_report += "\n✅ 所有账户处理完成！"
+    # 添加每个账户的摘要
+    for i, result in enumerate(all_results, 1):
+        tg_message += f"🔹 账户{i}:\n"
+        tg_message += f"   - 登录: {result['login']}\n"
+        tg_message += f"   - 签到: {result['sign_in']}\n"
+        
+        if result['draws']:
+            for j, draw in enumerate(result['draws'], 1):
+                # 提取状态图标
+                status_icon = "🎉" if "成功" in draw else "❌"
+                tg_message += f"   - 抽奖{j}: {status_icon} {draw.split(':')[-1].strip()}\n"
+        tg_message += "\n"
     
-    send_tg_notification(summary_report)
-
+    # 发送TG通知
+    send_tg_notification(tg_message)
+    
     print("---")
     print("## 执行统计")
     print(f"- **结束时间**: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"- **运行时长**: {duration.total_seconds():.2f} 秒")
     print()
     print("✅ **所有账户处理完成！**")
-
+    print(f"📨 已发送TG通知")
 
 if __name__ == "__main__":
     main()
