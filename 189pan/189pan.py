@@ -1,211 +1,340 @@
 import time
 import re
+import json
 import base64
+import hashlib
 import rsa
 import requests
 import os
 import sys
-from datetime import datetime, timedelta
-from typing import Tuple, List
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+from dotenv import load_dotenv
 
-# 配置常量
-BI_RM = list("0123456789abcdefghijklmnopqrstuvwxyz")
-B64MAP = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
-LOGIN_URL = "https://m.cloud.189.cn/udb/udb_login.jsp?pageId=1&clientType=wap"
-LOGIN_SUBMIT_URL = "https://open.e.189.cn/api/logbox/oauth2/loginSubmit.do"
-SIGN_URL_TEMPLATE = "https://api.cloud.189.cn/mkt/userSign.action?rand={}&clientType=TELEANDROID&version=8.6.3"
-DRAW_URLS = [
-    "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_SIGNIN",
-    "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_SIGNIN_PHOTOS",
-    "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_2022_FLDFS_KJ"
-]
+class Config:
+    """配置类，管理所有常量和URL"""
 
-# 全局消息
-start_time = datetime.now() + timedelta(hours=8)
-message = start_time.strftime("%Y/%m/%d %H:%M:%S") + " from TianYiCloud\n"
+    # 加密常量
+    BI_RM = list("0123456789abcdefghijklmnopqrstuvwxyz")
+    B64MAP = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
-# 工具函数
-def int2char(a: int) -> str:
-    return BI_RM[a]
+    # API端点
+    LOGIN_TOKEN_URL = "https://m.cloud.189.cn/udb/udb_login.jsp?pageId=1&pageKey=default&clientType=wap&redirectURL=https://m.cloud.189.cn/zhuanti/2021/shakeLottery/index.html"
+    LOGIN_SUBMIT_URL = "https://open.e.189.cn/api/logbox/oauth2/loginSubmit.do"
+    SIGN_URL_TEMPLATE = "https://api.cloud.189.cn/mkt/userSign.action?rand={}&clientType=TELEANDROID&version=8.6.3&model=SM-G930K"
 
-def b64tohex(a: str) -> str:
-    d = ""
-    e = 0
-    c = 0
-    for char in a:
-        if char != "=":
-            v = B64MAP.index(char)
-            if e == 0:
-                e = 1
-                d += int2char(v >> 2)
-                c = 3 & v
-            elif e == 1:
-                e = 2
-                d += int2char(c << 2 | v >> 4)
-                c = 15 & v
-            elif e == 2:
-                e = 3
-                d += int2char(c)
-                d += int2char(v >> 2)
-                c = 3 & v
+    # 抽奖URL
+    DRAW_URLS = [
+        "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_SIGNIN&activityId=ACT_SIGNIN",
+        "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_SIGNIN_PHOTOS&activityId=ACT_SIGNIN",
+        "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_2022_FLDFS_KJ&activityId=ACT_SIGNIN"
+    ]
+
+    # 请求头
+    LOGIN_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:74.0) Gecko/20100101 Firefox/76.0',
+        'Referer': 'https://open.e.189.cn/',
+    }
+
+    SIGN_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 5.1.1; SM-G930K Build/NRD90M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.136 Mobile Safari/537.36 Ecloud/8.6.3 Android/22 clientId/355325117317828 clientModel/SM-G930K imsi/460071114317824 clientChannelId/qq proVersion/1.0.6',
+        "Referer": "https://m.cloud.189.cn/zhuanti/2016/sign/index.jsp?albumBackupOpened=1",
+        "Host": "m.cloud.189.cn",
+        "Accept-Encoding": "gzip, deflate",
+    }
+
+
+class CryptoUtils:
+    """加密工具类"""
+
+    @staticmethod
+    def int2char(a: int) -> str:
+        """整数转字符"""
+        return Config.BI_RM[a]
+
+    @staticmethod
+    def b64tohex(a: str) -> str:
+        """Base64转十六进制"""
+        d = ""
+        e = 0
+        c = 0
+        for i in range(len(a)):
+            if list(a)[i] != "=":
+                v = Config.B64MAP.index(list(a)[i])
+                if 0 == e:
+                    e = 1
+                    d += CryptoUtils.int2char(v >> 2)
+                    c = 3 & v
+                elif 1 == e:
+                    e = 2
+                    d += CryptoUtils.int2char(c << 2 | v >> 4)
+                    c = 15 & v
+                elif 2 == e:
+                    e = 3
+                    d += CryptoUtils.int2char(c)
+                    d += CryptoUtils.int2char(v >> 2)
+                    c = 3 & v
+                else:
+                    e = 0
+                    d += CryptoUtils.int2char(c << 2 | v >> 4)
+                    d += CryptoUtils.int2char(15 & v)
+        if e == 1:
+            d += CryptoUtils.int2char(c << 2)
+        return d
+
+    @staticmethod
+    def rsa_encode(j_rsakey: str, string: str) -> str:
+        """RSA加密"""
+        rsa_key = f"-----BEGIN PUBLIC KEY-----\n{j_rsakey}\n-----END PUBLIC KEY-----"
+        pubkey = rsa.PublicKey.load_pkcs1_openssl_pem(rsa_key.encode())
+        result = CryptoUtils.b64tohex((base64.b64encode(rsa.encrypt(f'{string}'.encode(), pubkey))).decode())
+        return result
+
+class TianYiCloudBot:
+    """天翼云盘自动签到抽奖机器人"""
+
+    def __init__(self, username: str, password: str, account_id: str = ""):
+        self.username = username
+        self.password = password
+        self.account_id = account_id or f"账户{username[:3]}***"
+        self.session = requests.Session()
+
+    def _extract_login_params(self, html: str) -> Dict[str, str]:
+        """从HTML中提取登录参数"""
+        try:
+            captcha_token = re.findall(r"captchaToken' value='(.+?)'", html)[0]
+            lt = re.findall(r'lt = "(.+?)"', html)[0]
+            return_url = re.findall(r"returnUrl= '(.+?)'", html)[0]
+            param_id = re.findall(r'paramId = "(.+?)"', html)[0]
+            j_rsakey = re.findall(r'j_rsaKey" value="(\S+)"', html, re.M)[0]
+
+            return {
+                'captchaToken': captcha_token,
+                'lt': lt,
+                'returnUrl': return_url,
+                'paramId': param_id,
+                'j_rsakey': j_rsakey
+            }
+        except (IndexError, AttributeError) as e:
+            raise Exception(f"提取登录参数失败: {e}")
+
+    def login(self) -> bool:
+        """登录天翼云盘"""
+        try:
+            # 获取登录token
+            response = self.session.get(Config.LOGIN_TOKEN_URL)
+
+            # 提取重定向URL
+            pattern = r"https?://[^\s'\"]+"
+            match = re.search(pattern, response.text)
+            if not match:
+                print("没有找到重定向URL")
+                return False
+
+            redirect_url = match.group()
+            response = self.session.get(redirect_url)
+
+            # 提取登录页面href
+            pattern = r"<a id=\"j-tab-login-link\"[^>]*href=\"([^\"]+)\""
+            match = re.search(pattern, response.text)
+            if not match:
+                print("没有找到登录链接")
+                return False
+
+            href = match.group(1)
+            response = self.session.get(href)
+
+            # 提取登录参数
+            login_params = self._extract_login_params(response.text)
+            self.session.headers.update({"lt": login_params['lt']})
+
+            # RSA加密用户名和密码
+            encrypted_username = CryptoUtils.rsa_encode(login_params['j_rsakey'], self.username)
+            encrypted_password = CryptoUtils.rsa_encode(login_params['j_rsakey'], self.password)
+
+            # 构建登录数据
+            login_data = {
+                "appKey": "cloud",
+                "accountType": '01',
+                "userName": f"{{RSA}}{encrypted_username}",
+                "password": f"{{RSA}}{encrypted_password}",
+                "validateCode": "",
+                "captchaToken": login_params['captchaToken'],
+                "returnUrl": login_params['returnUrl'],
+                "mailSuffix": "@189.cn",
+                "paramId": login_params['paramId']
+            }
+
+            # 提交登录
+            response = self.session.post(
+                Config.LOGIN_SUBMIT_URL,
+                data=login_data,
+                headers=Config.LOGIN_HEADERS,
+                timeout=10
+            )
+
+            result = response.json()
+            if result['result'] == 0:
+                # 访问重定向URL完成登录
+                self.session.get(result['toUrl'])
+                return True
             else:
-                e = 0
-                d += int2char(c << 2 | v >> 4)
-                d += int2char(15 & v)
-    return d
+                return False
 
-def rsa_encode(j_rsakey: str, string: str) -> str:
-    rsa_key = f"-----BEGIN PUBLIC KEY-----\n{j_rsakey}\n-----END PUBLIC KEY-----"
-    pubkey = rsa.PublicKey.load_pkcs1_openssl_pem(rsa_key.encode())
-    encrypted = rsa.encrypt(string.encode(), pubkey)
-    return b64tohex(base64.b64encode(encrypted).decode())
-
-# 业务函数
-def extract_login_params(html: str) -> Tuple[str, str, str, str, str]:
-    """获取登录参数"""
-    try:
-        captcha_token = re.search(r"captchaToken' value='(.+?)'", html).group(1)
-        lt = re.search(r'lt = "(.+?)"', html).group(1)
-        return_url = re.search(r"returnUrl= '(.+?)'", html).group(1)
-        param_id = re.search(r'paramId = "(.+?)"', html).group(1)
-        j_rsakey = re.search(r'j_rsaKey" value="(\S+)"', html).group(1)
-        return captcha_token, lt, return_url, param_id, j_rsakey
-    except Exception as e:
-        raise ValueError(f"登录参数提取失败: {str(e)}")
-
-def login(session: requests.Session, username: str, password: str, account_id: str) -> bool:
-    """执行登录"""
-    global message
-    
-    try:
-        # 获取登录页面
-        res = session.get(LOGIN_URL)
-        redirect_url = re.search(r"https?://[^\s'\"]+", res.text).group()
-        res = session.get(redirect_url)
-        login_url = re.search(r'<a id="j-tab-login-link"[^>]*href="([^\"]+)"', res.text).group(1)
-        res = session.get(login_url)
-        
-        # 提取并加密参数
-        captcha_token, lt, return_url, param_id, j_rsakey = extract_login_params(res.text)
-        session.headers.update({"lt": lt})
-        
-        # 构建登录数据
-        login_data = {
-            "appKey": "cloud",
-            "accountType": "01",
-            "userName": f"{{RSA}}{rsa_encode(j_rsakey, username)}",
-            "password": f"{{RSA}}{rsa_encode(j_rsakey, password)}",
-            "captchaToken": captcha_token,
-            "returnUrl": return_url,
-            "paramId": param_id
-        }
-        
-        # 提交登录
-        res = session.post(LOGIN_SUBMIT_URL, data=login_data)
-        if res.json().get("result") != 0:
-            message += f"[{account_id}] 登录失败: 凭证错误\n"
+        except Exception as e:
+            print(f"登录过程出错: {e}")
             return False
-            
-        session.get(res.json()["toUrl"])
-        message += f"[{account_id}] 用户 {username[:3]}*** 登录成功\n"
-        return True
-    except Exception as e:
-        message += f"[{account_id}] 登录异常: {str(e)}\n"
-        return False
 
-def sign_in(session: requests.Session, account_id: str) -> bool:
-    """执行签到"""
-    global message
-    
-    try:
-        url = SIGN_URL_TEMPLATE.format(str(round(time.time() * 1000)))
-        res = session.get(url)
-        data = res.json()
-        
-        if data.get("isSign", False):
-            msg = f"今日已签到，获得{data.get('netdiskBonus', 0)}M空间"
-        else:
-            msg = f"签到成功，获得{data.get('netdiskBonus', 0)}M空间"
-            
-        message += f"[{account_id}] {msg}\n"
-        return True
-    except Exception as e:
-        err_msg = f"[{account_id}] 签到失败: {str(e)}"
-        message += err_msg + "\n"
-        return False
 
-def draw_prize(session: requests.Session, url: str, round_num: int, account_id: str) -> bool:
-    """执行抽奖"""
-    global message
-    
-    try:
-        res = session.get(url)
-        data = res.json()
-        
-        if "prizeName" in data:
-            msg = f"第{round_num}次抽奖: 获得{data['prizeName']}"
-        else:
-            msg = f"第{round_num}次抽奖: 失败({data.get('errorCode', '未知错误')})"
-            
-        message += f"[{account_id}] {msg}\n"
-        return True
-    except Exception as e:
-        err_msg = f"[{account_id}] 第{round_num}次抽奖异常: {str(e)}"
-        message += err_msg + "\n"
-        return False
+    def sign_in(self) -> Tuple[bool, str]:
+        """执行签到"""
+        try:
+            rand = str(round(time.time() * 1000))
+            sign_url = Config.SIGN_URL_TEMPLATE.format(rand)
 
-def process_account(username: str, password: str, account_id: str):
-    """处理单个账户的签到流程"""
-    session = requests.Session()
-    
-    # 执行登录
-    if not login(session, username, password, account_id):
-        return False
-    
-    # 执行签到
-    sign_in(session, account_id)
-    
-    # 执行抽奖
-    for i, url in enumerate(DRAW_URLS, 1):
-        time.sleep(1)  # 请求间隔
-        draw_prize(session, url, i, account_id)
-    
-    return True
+            response = self.session.get(sign_url, headers=Config.SIGN_HEADERS, timeout=10)
+            result = response.json()
 
-# 主流程
-if __name__ == "__main__":
-    try:
-        # 获取环境变量
-        usernames = os.environ.get('TYYP_USERNAME', '').strip().split('&')
-        passwords = os.environ.get('TYYP_PSW', '').strip().split('&')
-        
-        if not usernames or not passwords:
-            raise ValueError("未设置TYYP_USERNAME或TYYP_PSW环境变量")
-        
-        if len(usernames) != len(passwords):
-            raise ValueError("用户名和密码数量不匹配")
-        
-        # 处理每个账户
-        for i, (username, password) in enumerate(zip(usernames, passwords)):
-            account_id = f"账户{i+1}"
-            message += f"\n===== 开始处理 {account_id} =====\n"
-            process_account(username, password, account_id)
-        
-        # 添加执行统计
-        end_time = datetime.now()
-        duration = (end_time - start_time).total_seconds()
-        message += f"\n===== 执行统计 =====\n"
-        message += f"处理账户数: {len(usernames)}\n"
-        message += f"开始时间: {start_time.strftime('%Y/%m/%d %H:%M:%S')}\n"
-        message += f"结束时间: {end_time.strftime('%Y/%m/%d %H:%M:%S')}\n"
-        message += f"总耗时: {duration:.2f}秒\n"
-        
-        # 输出最终结果
-        print(message)
-        
-    except Exception as e:
-        error_msg = f"执行失败: {str(e)}"
-        message += error_msg
-        print(message, file=sys.stderr)
+            netdisk_bonus = result.get('netdiskBonus', 0)
+            is_signed = result.get('isSign', False)
+
+            if is_signed:
+                message = f"已签到，获得{netdisk_bonus}M空间"
+            else:
+                message = f"签到成功，获得{netdisk_bonus}M空间"
+
+            return True, message
+
+        except Exception as e:
+            error_msg = f"签到失败: {e}"
+            print(error_msg)
+            return False, error_msg
+
+    def draw_prize(self, round_num: int, url: str) -> Tuple[bool, str]:
+        """执行抽奖"""
+        try:
+            response = self.session.get(url, headers=Config.SIGN_HEADERS, timeout=10)
+            data = response.json()
+
+            if "errorCode" in data:
+                message = f"抽奖失败，次数不足"
+                return False, message
+            else:
+                prize_name = data.get("prizeName", "未知奖品")
+                message = f"抽奖成功，获得{prize_name}"
+                return True, message
+
+        except Exception as e:
+            error_msg = f"第{round_num}次抽奖出错: {e}"
+            print(error_msg)
+            return False, error_msg
+
+    def run(self) -> Dict[str, str]:
+        """执行完整的签到抽奖流程"""
+        results = {
+            'account_id': self.account_id,
+            'login': '',
+            'sign_in': '',
+            'draws': []
+        }
+
+        # 登录
+        if not self.login():
+            results['login'] = '登录失败'
+            return results
+
+        results['login'] = '登录成功'
+
+        # 签到
+        sign_success, sign_msg = self.sign_in()
+        results['sign_in'] = sign_msg
+
+        # 抽奖
+        for i, draw_url in enumerate(Config.DRAW_URLS, 1):
+            if i > 1:  # 第一次抽奖后等待5秒
+                time.sleep(5)
+
+            draw_success, draw_msg = self.draw_prize(i, draw_url)
+            results['draws'].append(draw_msg)
+
+        return results
+
+
+def load_accounts() -> List[Tuple[str, str]]:
+    """加载账户信息"""
+    load_dotenv()
+
+    username_env = os.getenv("TYYP_USERNAME")
+    password_env = os.getenv("TYYP_PSW")
+
+    if not username_env or not password_env:
+        print("错误：环境变量TYYP_USERNAME或TYYP_PSW未设置")
+        print("请确保.env文件存在并包含正确的配置")
         sys.exit(1)
+
+    usernames = username_env.split('&')
+    passwords = password_env.split('&')
+
+    if len(usernames) != len(passwords):
+        print("错误：用户名和密码数量不匹配")
+        sys.exit(1)
+
+    return list(zip(usernames, passwords))
+
+
+def main():
+    """主程序"""
+    # 记录开始时间
+    start_time = datetime.now()
+
+    print("# 天翼云盘自动签到抽奖程序")
+    print()
+
+    # 加载账户信息
+    accounts = load_accounts()
+    print(f"## 执行概览")
+    print(f"- **启动时间**: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"- **账户数量**: {len(accounts)} 个")
+    print()
+
+    # 处理每个账户
+    for i, (username, password) in enumerate(accounts, 1):
+        account_id = f"账户{i}"
+        print(f"## {account_id}")
+
+        bot = TianYiCloudBot(username, password, account_id)
+        results = bot.run()
+
+        # 输出结果摘要
+        print(f"### 执行结果")
+        print(f"- **登录状态**: {results['login']}")
+        print(f"- **签到结果**: {results['sign_in']}")
+
+        # 抽奖结果
+        if results['draws']:
+            print(f"- **抽奖结果**:")
+            for j, draw_result in enumerate(results['draws'], 1):
+                # 提取关键信息，去除重复的"第X次"
+                clean_result = draw_result.replace(f"第{j}次", "").strip()
+                if "成功" in draw_result:
+                    print(f"  - 🎉 第{j}次: {clean_result}")
+                else:
+                    print(f"  - ❌ 第{j}次: {clean_result}")
+
+        print()
+
+    # 记录结束时间并计算运行时间
+    end_time = datetime.now()
+    duration = end_time - start_time
+
+    print("---")
+    print("## 执行统计")
+    print(f"- **结束时间**: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"- **运行时长**: {duration.total_seconds():.2f} 秒")
+    print()
+    print("✅ **所有账户处理完成！**")
+
+
+if __name__ == "__main__":
+    main()
