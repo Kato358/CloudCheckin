@@ -1,13 +1,12 @@
 import time
 import re
 import base64
-import hashlib
 import rsa
 import requests
 import os
 import sys
 from datetime import datetime, timedelta
-from typing import Tuple, Optional
+from typing import Tuple, List
 
 # 配置常量
 BI_RM = list("0123456789abcdefghijklmnopqrstuvwxyz")
@@ -22,11 +21,9 @@ DRAW_URLS = [
     "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_2022_FLDFS_KJ"
 ]
 
-# 全局消息和会话
-message = ""
-session = requests.Session()
-time = datetime.now() + timedelta(hours=8)
-message = time.strftime("%Y/%m/%d %H:%M:%S") + " from TianYiCloud\n"
+# 全局消息
+start_time = datetime.now() + timedelta(hours=8)
+message = start_time.strftime("%Y/%m/%d %H:%M:%S") + " from TianYiCloud\n"
 
 # 工具函数
 def int2char(a: int) -> str:
@@ -77,9 +74,9 @@ def extract_login_params(html: str) -> Tuple[str, str, str, str, str]:
     except Exception as e:
         raise ValueError(f"登录参数提取失败: {str(e)}")
 
-def login(username: str, password: str) -> bool:
+def login(session: requests.Session, username: str, password: str, account_id: str) -> bool:
     """执行登录"""
-    global message, session
+    global message
     
     try:
         # 获取登录页面
@@ -107,19 +104,19 @@ def login(username: str, password: str) -> bool:
         # 提交登录
         res = session.post(LOGIN_SUBMIT_URL, data=login_data)
         if res.json().get("result") != 0:
-            message += "登录失败: 凭证错误\n"
+            message += f"[{account_id}] 登录失败: 凭证错误\n"
             return False
             
         session.get(res.json()["toUrl"])
-        message += f"用户 {username[:3]}*** 登录成功\n"
+        message += f"[{account_id}] 用户 {username[:3]}*** 登录成功\n"
         return True
     except Exception as e:
-        message += f"登录异常: {str(e)}\n"
+        message += f"[{account_id}] 登录异常: {str(e)}\n"
         return False
 
-def sign_in() -> Tuple[bool, str]:
+def sign_in(session: requests.Session, account_id: str) -> bool:
     """执行签到"""
-    global message, session
+    global message
     
     try:
         url = SIGN_URL_TEMPLATE.format(str(round(time.time() * 1000)))
@@ -131,16 +128,16 @@ def sign_in() -> Tuple[bool, str]:
         else:
             msg = f"签到成功，获得{data.get('netdiskBonus', 0)}M空间"
             
-        message += msg + "\n"
-        return True, msg
+        message += f"[{account_id}] {msg}\n"
+        return True
     except Exception as e:
-        err_msg = f"签到失败: {str(e)}"
+        err_msg = f"[{account_id}] 签到失败: {str(e)}"
         message += err_msg + "\n"
-        return False, err_msg
+        return False
 
-def draw_prize(url: str, round_num: int) -> Tuple[bool, str]:
+def draw_prize(session: requests.Session, url: str, round_num: int, account_id: str) -> bool:
     """执行抽奖"""
-    global message, session
+    global message
     
     try:
         res = session.get(url)
@@ -151,36 +148,60 @@ def draw_prize(url: str, round_num: int) -> Tuple[bool, str]:
         else:
             msg = f"第{round_num}次抽奖: 失败({data.get('errorCode', '未知错误')})"
             
-        message += msg + "\n"
-        return True, msg
+        message += f"[{account_id}] {msg}\n"
+        return True
     except Exception as e:
-        err_msg = f"第{round_num}次抽奖异常: {str(e)}"
+        err_msg = f"[{account_id}] 第{round_num}次抽奖异常: {str(e)}"
         message += err_msg + "\n"
-        return False, err_msg
+        return False
+
+def process_account(username: str, password: str, account_id: str):
+    """处理单个账户的签到流程"""
+    session = requests.Session()
+    
+    # 执行登录
+    if not login(session, username, password, account_id):
+        return False
+    
+    # 执行签到
+    sign_in(session, account_id)
+    
+    # 执行抽奖
+    for i, url in enumerate(DRAW_URLS, 1):
+        time.sleep(1)  # 请求间隔
+        draw_prize(session, url, i, account_id)
+    
+    return True
 
 # 主流程
 if __name__ == "__main__":
     try:
         # 获取环境变量
-        username = os.environ.get('TYYP_USERNAME', '').strip()
-        password = os.environ.get('TYYP_PSW', '').strip()
+        usernames = os.environ.get('TYYP_USERNAME', '').strip().split('&')
+        passwords = os.environ.get('TYYP_PSW', '').strip().split('&')
         
-        if not username or not password:
+        if not usernames or not passwords:
             raise ValueError("未设置TYYP_USERNAME或TYYP_PSW环境变量")
-            
-        # 执行登录
-        if not login(username, password):
-            raise ValueError("登录流程失败")
-            
-        # 执行签到
-        sign_success, sign_msg = sign_in()
         
-        # 执行抽奖
-        for i, url in enumerate(DRAW_URLS, 1):
-            time.sleep(1)  # 请求间隔
-            draw_prize(url, i)
-            
-        # 显示最终结果
+        if len(usernames) != len(passwords):
+            raise ValueError("用户名和密码数量不匹配")
+        
+        # 处理每个账户
+        for i, (username, password) in enumerate(zip(usernames, passwords)):
+            account_id = f"账户{i+1}"
+            message += f"\n===== 开始处理 {account_id} =====\n"
+            process_account(username, password, account_id)
+        
+        # 添加执行统计
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        message += f"\n===== 执行统计 =====\n"
+        message += f"处理账户数: {len(usernames)}\n"
+        message += f"开始时间: {start_time.strftime('%Y/%m/%d %H:%M:%S')}\n"
+        message += f"结束时间: {end_time.strftime('%Y/%m/%d %H:%M:%S')}\n"
+        message += f"总耗时: {duration:.2f}秒\n"
+        
+        # 输出最终结果
         print(message)
         
     except Exception as e:
