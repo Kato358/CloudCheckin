@@ -45,6 +45,22 @@ jobs:
           name: Run 1point3acres signin
           command: |
             python -m onepoint3acres.onepoint3acres
+     
+      
+   189pan:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: |
+            python -m pip install --upgrade pip
+            pip install requests 2captcha-python
+      - run:
+          name: Run 1point3acres signin
+          command: |
+            python -m 189pan.189pan      
 
 workflows:
   # Allow manual triggers
@@ -56,3 +72,5 @@ workflows:
           context: checkincontext
       # - onepoint3acres:
       #     context: checkincontext
+      - 189pan:
+          context: checkincontext
