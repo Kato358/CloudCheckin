@@ -56,7 +56,7 @@ jobs:
           name: Install dependencies
           command: |
             python -m pip install --upgrade pip
-            pip install requests 2captcha-python
+            pip install requests rsa python-dotenv
       - run:
           name: Run 189pan signin  # 修正描述文本
           command: |
