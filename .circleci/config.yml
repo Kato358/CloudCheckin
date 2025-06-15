@@ -46,7 +46,8 @@ jobs:
           command: |
             python -m onepoint3acres.onepoint3acres
 
-  189pan:
+  # 修正名称：以字母开头
+  pan_189:
     docker:
       - image: cimg/python:3.11
     steps:
@@ -57,7 +58,7 @@ jobs:
             python -m pip install --upgrade pip
             pip install requests 2captcha-python
       - run:
-          name: Run 189pan signin  # 修正任务描述
+          name: Run 189pan signin  # 修正描述文本
           command: |
             python -m 189pan.189pan
 
@@ -70,5 +71,5 @@ workflows:
           context: checkincontext
       # - onepoint3acres:
       #     context: checkincontext
-      - 189pan:
+      - pan_189:  # 使用修正后的作业名称
           context: checkincontext
