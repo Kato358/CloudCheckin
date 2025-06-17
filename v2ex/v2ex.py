@@ -8,7 +8,7 @@ from telegram.notify import send_tg_notification
 cookie = os.environ.get('V2EX_COOKIE').strip()
 # 初始化消息时间
 time = datetime.now() + timedelta(hours=8)
-message = time.strftime("%Y/%m/%d %H:%M:%S") + " V2EX签到报告\n"
+message = f"⏰ {time.strftime('%Y/%m/%d %H:%M:%S')} V2EX 签到通知\n\n"
 headers = {
     "Referer": "https://www.v2ex.com/mission/daily",
     "Host": "www.v2ex.com",
@@ -17,105 +17,122 @@ headers = {
 }
 
 def get_once() -> tuple[str, bool]:
-    """获取once值并检查签到状态
+    """获取 once 值和签到状态
     
     Returns:
-        tuple: once值和签到状态(True表示已签到)
+        tuple: once 值和是否已签到
     """
     global message
     url = "https://www.v2ex.com/mission/daily"
     res = requests.get(url, headers=headers)
     content = res.text
     
-    # 检查Cookie有效性
-    if re.search(r"需要先登录", content):
-        message += "❌ Cookie已失效\n"
+    reg1 = r"需要先登录"
+    if re.search(reg1, content):
+        message += "❌ Cookie 已过期，请更新！"
         return None, False
-    
-    # 检查是否已签到
-    if re.search(r"每日登录奖励已领取", content):
-        message += "✅ 今日已签到\n"
-        return None, True
-    
-    # 尝试获取once值
-    once_match = re.search(r"redeem\?once=(.*?)'", content)
-    if once_match:
-        once = once_match.group(1)
-        message += f"🔄 成功获取once值: {once}\n"
-        return once, False
-    
-    message += "❌ 未签到但获取once值失败\n"
-    return None, False
+    else:
+        reg = r"每日登录奖励已领取"
+        if re.search(reg, content):
+            return None, True
+        else:
+            reg = r"redeem\?once=(.*?)'"
+            once_match = re.search(reg, content)
+            if once_match:
+                once = once_match.group(1)
+                return once, False
+            else:
+                message += "❌ 未签到但获取 once 值失败"
+                return None, False
 
 def check_in(once: str) -> bool:
-    """执行签到操作
+    """执行签到并返回是否成功
     
     Args:
-        once: 签到所需的once值
+        once: once 值
         
     Returns:
-        bool: 签到是否成功
+        bool: 是否签到成功
     """
     global message
     url = f"https://www.v2ex.com/mission/daily/redeem?once={once}"
     res = requests.get(url, headers=headers)
+    content = res.text
     
-    if re.search(r"已成功领取每日登录奖励", res.text):
-        message += "🎉 签到成功\n"
+    reg = r"已成功领取每日登录奖励"
+    if re.search(reg, content):
         return True
-    
-    message += "❌ 签到失败\n"
-    return False
+    else:
+        message += "❌ 签到失败"
+        return False
 
 def get_balance() -> tuple[str, str]:
-    """查询账户余额
+    """查询余额信息
     
     Returns:
-        tuple: (签到时间, 余额)
+        tuple: 签到时间和余额
     """
     url = "https://www.v2ex.com/balance"
     res = requests.get(url, headers=headers)
+    content = res.text
     pattern = r'每日登录奖励.*?<small class="gray">(.*?)</small>.*?<td class="d" style="text-align: right;">.*?</td>.*?<td class="d" style="text-align: right;">(.*?)</td>'
-    match = re.search(pattern, res.text, re.DOTALL)
+    match = re.search(pattern, content, re.DOTALL)
     
-    return (match.group(1).strip(), match.group(2).strip()) if match else (None, None)
+    if match:
+        time = match.group(1).strip()
+        balance = match.group(2).strip()
+        return time, balance
+    else:
+        return None, None
+
+def format_message(status: str, balance_info: tuple = None):
+    """格式化通知消息
+    
+    Args:
+        status: 签到状态描述
+        balance_info: 余额信息元组 (时间, 余额)
+    """
+    global message
+    message = f"🏷️ V2EX 自动签到通知\n"
+    message += f"⏰ 时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}\n"
+    message += f"📌 状态: {status}\n"
+    
+    if balance_info and balance_info[0] and balance_info[1]:
+        message += f"🕒 上次签到: {balance_info[0]}\n"
+        message += f"💰 当前余额: {balance_info[1]}\n"
+    
+    message += "\n" + "-"*30 + "\n"
+    message += "🔔 此通知由自动签到系统生成"
 
 if __name__ == "__main__":
     try:
-        # 验证Cookie是否设置
         if not cookie:
-            raise ValueError("❌ 环境变量V2EX_COOKIE未设置")
+            raise ValueError("❌ 环境变量 V2EX_COOKIE 未设置")
         
+        # 获取 once 值和签到状态
         once, signed = get_once()
-        
-        # 根据状态执行不同操作
+        balance_info = get_balance()  # 总是尝试获取余额信息
+
+        # 处理不同签到状态
         if signed:
-            # 已签到状态获取余额
-            time_str, balance_val = get_balance()
-            if time_str and balance_val:
-                message += f"⏰ 最近签到时间: {time_str}\n💰 当前余额: {balance_val}"
-            else:
-                message += "⚠️ 获取余额信息失败"
-            send_tg_notification(message)
-            
+            status = "✅ 今日已签到"
+            format_message(status, balance_info)
         elif once:
-            # 执行签到操作
             if check_in(once):
-                # 签到成功后获取余额
-                time_str, balance_val = get_balance()
-                if time_str and balance_val:
-                    message += f"⏰ 最近签到时间: {time_str}\n💰 当前余额: {balance_val}"
-                else:
-                    message += "⚠️ 获取余额信息失败"
-            send_tg_notification(message)
+                # 重新获取最新的余额信息
+                balance_info = get_balance()
+                status = "🎉 签到成功！"
+                format_message(status, balance_info)
+            else:
+                format_message("❌ 签到失败", balance_info)
         else:
-            # 未签到且未获取到once值
-            message += "❌ 无法执行签到操作"
-            send_tg_notification(message)
-            sys.exit(1)
-            
-    except Exception as err:
-        message += f"❗️ 发生异常: {str(err)}"
+            format_message("❌ 未签到且无法获取 once 值", balance_info)
+        
+        # 发送通知
         send_tg_notification(message)
+        
+    except Exception as err:
+        error_msg = f"🚨 发生意外错误:\n{str(err)}"
+        send_tg_notification(error_msg)
         print(err, flush=True)
         sys.exit(1)
