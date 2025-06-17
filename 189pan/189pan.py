@@ -7,6 +7,7 @@ import rsa
 import requests
 import os
 import sys
+import random
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
@@ -92,6 +93,7 @@ class CryptoUtils:
         result = CryptoUtils.b64tohex((base64.b64encode(rsa.encrypt(f'{string}'.encode(), pubkey))).decode())
         return result
 
+
 class TianYiCloudBot:
     """天翼云盘自动签到抽奖机器人"""
 
@@ -99,93 +101,129 @@ class TianYiCloudBot:
         self.username = username
         self.password = password
         self.account_id = account_id or f"账户{username[:3]}***"
+        # 创建完全独立的会话
         self.session = requests.Session()
+        # 设置默认请求头
+        self.session.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*'
+        }
 
     def _extract_login_params(self, html: str) -> Dict[str, str]:
-        """从HTML中提取登录参数"""
+        """从HTML中提取登录参数（改进版）"""
+        params = {
+            'captchaToken': '',
+            'lt': '',
+            'returnUrl': '',
+            'paramId': '',
+            'j_rsakey': ''
+        }
+        
         try:
-            captcha_token = re.findall(r"captchaToken' value='(.+?)'", html)[0]
-            lt = re.findall(r'lt = "(.+?)"', html)[0]
-            return_url = re.findall(r"returnUrl= '(.+?)'", html)[0]
-            param_id = re.findall(r'paramId = "(.+?)"', html)[0]
-            j_rsakey = re.findall(r'j_rsaKey" value="(\S+)"', html, re.M)[0]
-
-            return {
-                'captchaToken': captcha_token,
-                'lt': lt,
-                'returnUrl': return_url,
-                'paramId': param_id,
-                'j_rsakey': j_rsakey
-            }
-        except (IndexError, AttributeError) as e:
-            raise Exception(f"提取登录参数失败: {e}")
+            # 使用更稳健的提取方式
+            captcha_token = re.search(r"name='captchaToken' value='(.*?)'", html)
+            lt = re.search(r'name="lt" value="(.*?)"', html)
+            return_url = re.search(r"returnUrl\s*=\s*'(.*?)'", html)
+            param_id = re.search(r'name="paramId" value="(.*?)"', html)
+            j_rsakey = re.search(r'name="j_rsaKey" value="(.*?)"', html)
+            
+            if captcha_token: params['captchaToken'] = captcha_token.group(1)
+            if lt: params['lt'] = lt.group(1)
+            if return_url: params['returnUrl'] = return_url.group(1)
+            if param_id: params['paramId'] = param_id.group(1)
+            if j_rsakey: params['j_rsakey'] = j_rsakey.group(1)
+            
+            return params
+        except Exception as e:
+            print(f"参数提取异常: {e}")
+            # 保存HTML用于调试
+            timestamp = int(time.time())
+            with open(f"login_error_{timestamp}.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            print(f"已保存错误页面到 login_error_{timestamp}.html")
+            return params
 
     def login(self) -> bool:
-        """登录天翼云盘"""
-        try:
-            # 获取登录token
-            response = self.session.get(Config.LOGIN_TOKEN_URL)
-
-            # 提取重定向URL
-            pattern = r"https?://[^\s'\"]+"
-            match = re.search(pattern, response.text)
-            if not match:
-                print("没有找到重定向URL")
-                return False
-
-            redirect_url = match.group()
-            response = self.session.get(redirect_url)
-
-            # 提取登录页面href
-            pattern = r"<a id=\"j-tab-login-link\"[^>]*href=\"([^\"]+)\""
-            match = re.search(pattern, response.text)
-            if not match:
-                print("没有找到登录链接")
-                return False
-
-            href = match.group(1)
-            response = self.session.get(href)
-
-            # 提取登录参数
-            login_params = self._extract_login_params(response.text)
-            self.session.headers.update({"lt": login_params['lt']})
-
-            # RSA加密用户名和密码
-            encrypted_username = CryptoUtils.rsa_encode(login_params['j_rsakey'], self.username)
-            encrypted_password = CryptoUtils.rsa_encode(login_params['j_rsakey'], self.password)
-
-            # 构建登录数据
-            login_data = {
-                "appKey": "cloud",
-                "accountType": '01',
-                "userName": f"{{RSA}}{encrypted_username}",
-                "password": f"{{RSA}}{encrypted_password}",
-                "validateCode": "",
-                "captchaToken": login_params['captchaToken'],
-                "returnUrl": login_params['returnUrl'],
-                "mailSuffix": "@189.cn",
-                "paramId": login_params['paramId']
-            }
-
-            # 提交登录
-            response = self.session.post(
-                Config.LOGIN_SUBMIT_URL,
-                data=login_data,
-                headers=Config.LOGIN_HEADERS,
-                timeout=10
-            )
-
-            result = response.json()
-            if result['result'] == 0:
-                # 访问重定向URL完成登录
-                self.session.get(result['toUrl'])
-                return True
-            else:
-                return False
-
-        except Exception as e:
-            print(f"登录过程出错: {e}")
-            return False
+        """登录天翼云盘（带重试机制）"""
+        for attempt in range(3):  # 最多重试3次
+            try:
+                print(f"登录尝试 {attempt+1}/3...")
+                # 获取登录token
+                response = self.session.get(Config.LOGIN_TOKEN_URL, timeout=15)
+                
+                # 提取重定向URL
+                pattern = r"https?://[^\s'\"]+"
+                match = re.search(pattern, response.text)
+                if not match:
+                    print("没有找到重定向URL")
+                    continue  # 重试
+                
+                redirect_url = match.group()
+                response = self.session.get(redirect_url, timeout=15)
+                
+                # 提取登录页面href
+                pattern = r"<a id=\"j-tab-login-link\"[^>]*href=\"([^\"]+)\""
+                match = re.search(pattern, response.text)
+                if not match:
+                    print("没有找到登录链接")
+                    continue  # 重试
+                
+                href = match.group(1)
+                response = self.session.get(href, timeout=15)
+                
+                # 提取登录参数
+                login_params = self._extract_login_params(response.text)
+                if not all(login_params.values()):
+                    print(f"登录参数缺失: {login_params}")
+                    continue  # 重试
+                
+                # RSA加密用户名和密码
+                encrypted_username = CryptoUtils.rsa_encode(login_params['j_rsakey'], self.username)
+                encrypted_password = CryptoUtils.rsa_encode(login_params['j_rsakey'], self.password)
+                
+                # 构建登录数据
+                login_data = {
+                    "appKey": "cloud",
+                    "accountType": '01',
+                    "userName": f"{{RSA}}{encrypted_username}",
+                    "password": f"{{RSA}}{encrypted_password}",
+                    "validateCode": "",
+                    "captchaToken": login_params['captchaToken'],
+                    "returnUrl": login_params['returnUrl'],
+                    "mailSuffix": "@189.cn",
+                    "paramId": login_params['paramId']
+                }
+                
+                # 提交登录
+                response = self.session.post(
+                    Config.LOGIN_SUBMIT_URL,
+                    data=login_data,
+                    headers=Config.LOGIN_HEADERS,
+                    timeout=15
+                )
+                
+                # 记录详细响应
+                print(f"登录响应: {response.status_code}, {response.text[:200]}...")
+                
+                result = response.json()
+                if result.get('result') == 0:
+                    # 访问重定向URL完成登录
+                    self.session.get(result['toUrl'], timeout=15)
+                    print("登录成功")
+                    return True
+                else:
+                    print(f"登录失败: {result.get('msg', '未知错误')}")
+            
+            except Exception as e:
+                print(f"登录过程出错: {e}")
+            
+            # 如果不是最后一次尝试，等待后重试
+            if attempt < 2:
+                wait_time = 5 + attempt * 3  # 等待时间递增：5, 8, 11秒
+                print(f"等待{wait_time}秒后重试...")
+                time.sleep(wait_time)
+        
+        return False
 
 
     def sign_in(self) -> Tuple[bool, str]:
@@ -194,7 +232,7 @@ class TianYiCloudBot:
             rand = str(round(time.time() * 1000))
             sign_url = Config.SIGN_URL_TEMPLATE.format(rand)
 
-            response = self.session.get(sign_url, headers=Config.SIGN_HEADERS, timeout=10)
+            response = self.session.get(sign_url, headers=Config.SIGN_HEADERS, timeout=15)
             result = response.json()
 
             netdisk_bonus = result.get('netdiskBonus', 0)
@@ -215,7 +253,7 @@ class TianYiCloudBot:
     def draw_prize(self, round_num: int, url: str) -> Tuple[bool, str]:
         """执行抽奖"""
         try:
-            response = self.session.get(url, headers=Config.SIGN_HEADERS, timeout=10)
+            response = self.session.get(url, headers=Config.SIGN_HEADERS, timeout=15)
             data = response.json()
 
             if "errorCode" in data:
@@ -280,7 +318,9 @@ def load_accounts() -> List[Tuple[str, str]]:
     if len(usernames) != len(passwords):
         print("错误：用户名和密码数量不匹配")
         sys.exit(1)
-
+    
+    # 调试输出账号数量
+    print(f"加载了 {len(usernames)} 个账号")
     return list(zip(usernames, passwords))
 
 
@@ -306,6 +346,12 @@ def main():
     for i, (username, password) in enumerate(accounts, 1):
         account_id = f"账户{i}"
         print(f"## {account_id}")
+        
+        # 从第二个账号开始增加随机延迟
+        if i > 1:
+            delay = 15 + random.randint(0, 10)  # 15-25秒随机延迟
+            print(f"等待{delay}秒后处理下一个账号...")
+            time.sleep(delay)
         
         bot = TianYiCloudBot(username, password, account_id)
         results = bot.run()
@@ -365,4 +411,4 @@ def main():
     print(f"📨 已发送TG通知")
 
 if __name__ == "__main__":
-    main() 
+    main()
